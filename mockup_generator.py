@@ -108,7 +108,7 @@ if design_files and shirt_files:
 
         preview = shirt.copy()
         preview.paste(resized_design, (x, y), resized_design)
-        st.image(preview, caption="📸 Live Mockup Preview", use_column_width=True)
+        st.image(preview, caption="📸 Live Mockup Preview", use_container_width=True)
 
         # Close images to free memory
         design.close()
@@ -182,3 +182,4 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
             file_name="all_mockups_by_design.zip",
             mime="application/zip"
         )
+
