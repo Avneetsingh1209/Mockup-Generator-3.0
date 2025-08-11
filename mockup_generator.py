@@ -20,7 +20,6 @@ plain_padding_ratio = st.sidebar.slider("Padding Ratio – Plain Shirt", 0.1, 1.
 model_padding_ratio = st.sidebar.slider("Padding Ratio – Model Shirt", 0.1, 1.0, 0.45, 0.05)
 plain_offset_pct = st.sidebar.slider("Vertical Offset – Plain Shirt (%)", -50, 100, 24, 1)
 model_offset_pct = st.sidebar.slider("Vertical Offset – Model Shirt (%)", -50, 100, 38, 1)
-resize_width = st.sidebar.number_input("Resize shirt width (px, 0 = no resize)", 0, 5000, 0, step=100)
 
 # --- Session Setup ---
 if "design_names" not in st.session_state:
@@ -180,4 +179,5 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
             file_name="all_mockups.zip",
             mime="application/zip"
         )
+
 
