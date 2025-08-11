@@ -85,11 +85,6 @@ if design_files and shirt_files:
             selected_shirt.seek(0)
             with Image.open(selected_shirt).convert("RGBA") as shirt:
 
-                # Optional resize for memory savings
-                if resize_width > 0 and shirt.width > resize_width:
-                    new_height = int(shirt.height * (resize_width / shirt.width))
-                    shirt = shirt.resize((resize_width, new_height), Image.LANCZOS)
-
                 is_model = "model" in selected_shirt.name.lower()
                 offset_pct = model_offset_pct if is_model else plain_offset_pct
                 padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
@@ -179,5 +174,6 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
             file_name="all_mockups.zip",
             mime="application/zip"
         )
+
 
 
