@@ -5,42 +5,37 @@ import zipfile
 import io
 import cv2
 import os
+import gc
 
 st.set_page_config(page_title="Shirt Mockup Generator", layout="centered")
 st.title("👕 Shirt Mockup Generator with Batching")
 
 st.markdown("""
 Upload multiple design PNGs and shirt templates.  
-Preview placement and generate mockups in batches.
+Preview placement and generate mockups in batches without crashing.
 """)
 
 # --- Sidebar Controls ---
 plain_padding_ratio = st.sidebar.slider("Padding Ratio – Plain Shirt", 0.1, 1.0, 0.45, 0.05)
 model_padding_ratio = st.sidebar.slider("Padding Ratio – Model Shirt", 0.1, 1.0, 0.45, 0.05)
-plain_offset_pct = st.sidebar.slider("Vertical Offset – Plain Shirt (%)", -50, 100, 23, 1)
+plain_offset_pct = st.sidebar.slider("Vertical Offset – Plain Shirt (%)", -50, 100, 24, 1)
 model_offset_pct = st.sidebar.slider("Vertical Offset – Model Shirt (%)", -50, 100, 38, 1)
+resize_width = st.sidebar.number_input("Resize shirt width (px, 0 = no resize)", 0, 5000, 0, step=100)
 
 # --- Session Setup ---
-if "zip_files_output" not in st.session_state:
-    st.session_state.zip_files_output = {}
 if "design_names" not in st.session_state:
     st.session_state.design_names = {}
-
-# --- Clear Cache Button ---
-if st.button("🧹 Clear Cache"):
-    st.cache_data.clear()
-    st.cache_resource.clear()
-    st.success("Cache cleared successfully!")
+if "shirt_bboxes" not in st.session_state:
+    st.session_state.shirt_bboxes = {}
 
 # --- Upload Section ---
 design_files = st.file_uploader("📌 Upload Design Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 shirt_files = st.file_uploader("🎨 Upload Shirt Templates", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# --- Clear All Button ---
-if st.button("🔄 Start Over (Clear Generated Mockups)"):
-    for key in ["design_files", "design_names", "zip_files_output"]:
-        if key in st.session_state:
-            del st.session_state[key]
+# --- Clear Button ---
+if st.button("🔄 Start Over"):
+    st.session_state.design_names.clear()
+    st.session_state.shirt_bboxes.clear()
     st.rerun()
 
 # --- Design Naming ---
@@ -49,7 +44,7 @@ if design_files:
     for i, file in enumerate(design_files):
         default_name = os.path.splitext(file.name)[0]
         custom_name = st.text_input(
-            f"Name for Design {i+1} ({file.name})", 
+            f"Name for Design {i+1} ({file.name})",
             value=st.session_state.design_names.get(file.name, default_name),
             key=f"name_input_{i}_{file.name}"
         )
@@ -63,17 +58,21 @@ if design_files:
     batch_end = st.number_input("End at Design #", min_value=batch_start, max_value=total_designs, value=min(batch_start + 19, total_designs))
     selected_batch = design_files[batch_start - 1: batch_end]
 
-# --- Bounding Box Detection ---
-def get_shirt_bbox(pil_image):
-    img_cv = np.array(pil_image.convert("RGB"))[:, :, ::-1]
+# --- Bounding Box Detection (cached) ---
+def get_shirt_bbox_cached(shirt_bytes, shirt_name):
+    if shirt_name in st.session_state.shirt_bboxes:
+        return st.session_state.shirt_bboxes[shirt_name]
+
+    with Image.open(io.BytesIO(shirt_bytes)).convert("RGB") as pil_image:
+        img_cv = np.array(pil_image)[:, :, ::-1]
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     _, thresh = cv2.threshold(blurred, 240, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        largest = max(contours, key=cv2.contourArea)
-        return cv2.boundingRect(largest)
-    return None
+    bbox = cv2.boundingRect(max(contours, key=cv2.contourArea)) if contours else None
+
+    st.session_state.shirt_bboxes[shirt_name] = bbox
+    return bbox
 
 # --- Live Preview ---
 if design_files and shirt_files:
@@ -83,103 +82,101 @@ if design_files and shirt_files:
 
     try:
         selected_design.seek(0)
-        design = Image.open(selected_design).convert("RGBA")
-        selected_shirt.seek(0)
-        shirt = Image.open(selected_shirt).convert("RGBA")
+        with Image.open(selected_design).convert("RGBA") as design:
+            selected_shirt.seek(0)
+            with Image.open(selected_shirt).convert("RGBA") as shirt:
 
-        is_model = "model" in selected_shirt.name.lower()
-        offset_pct = model_offset_pct if is_model else plain_offset_pct
-        padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
+                # Optional resize for memory savings
+                if resize_width > 0 and shirt.width > resize_width:
+                    new_height = int(shirt.height * (resize_width / shirt.width))
+                    shirt = shirt.resize((resize_width, new_height), Image.LANCZOS)
 
-        bbox = get_shirt_bbox(shirt)
-        if bbox:
-            sx, sy, sw, sh = bbox
-            scale = min(sw / design.width, sh / design.height, 1.0) * padding_ratio
-            new_width = int(design.width * scale)
-            new_height = int(design.height * scale)
-            resized_design = design.resize((new_width, new_height))
-            y_offset = int(sh * offset_pct / 100)
-            x = sx + (sw - new_width) // 2
-            y = sy + y_offset
-        else:
-            resized_design = design
-            x = (shirt.width - design.width) // 2
-            y = (shirt.height - design.height) // 2
+                is_model = "model" in selected_shirt.name.lower()
+                offset_pct = model_offset_pct if is_model else plain_offset_pct
+                padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
 
-        preview = shirt.copy()
-        preview.paste(resized_design, (x, y), resized_design)
-        st.image(preview, caption="📸 Live Mockup Preview", use_container_width=True)
+                bbox = get_shirt_bbox_cached(selected_shirt.getvalue(), selected_shirt.name)
+                if bbox:
+                    sx, sy, sw, sh = bbox
+                    scale = min(sw / design.width, sh / design.height, 1.0) * padding_ratio
+                    new_width = int(design.width * scale)
+                    new_height = int(design.height * scale)
+                    resized_design = design.resize((new_width, new_height))
+                    y_offset = int(sh * offset_pct / 100)
+                    x = sx + (sw - new_width) // 2
+                    y = sy + y_offset
+                else:
+                    resized_design = design
+                    x = (shirt.width - design.width) // 2
+                    y = (shirt.height - design.height) // 2
 
-        # Close images to free memory
-        design.close()
-        shirt.close()
-        resized_design.close()
-        preview.close()
+                preview = shirt.copy()
+                preview.paste(resized_design, (x, y), resized_design)
+                st.image(preview, caption="📸 Live Mockup Preview", use_container_width=True)
 
     except Exception as e:
         st.error(f"⚠️ Preview failed: {e}")
 
-# --- Generate Mockups ---
+# --- Generate Mockups (optimized) ---
 if st.button("🚀 Generate Mockups for Selected Batch"):
     if not (selected_batch and shirt_files):
         st.warning("Upload at least one design and one shirt template.")
     else:
-        master_zip = io.BytesIO()
-        with zipfile.ZipFile(master_zip, "w", zipfile.ZIP_DEFLATED) as master_zipf:
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
             for design_file in selected_batch:
-                graphic_name = st.session_state.design_names.get(design_file.name, "graphic")
+                design_name = st.session_state.design_names.get(design_file.name, "graphic")
+
                 design_file.seek(0)
-                design = Image.open(design_file).convert("RGBA")
-
-                inner_zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(inner_zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+                with Image.open(design_file).convert("RGBA") as design:
                     for shirt_file in shirt_files:
-                        color_name = os.path.splitext(shirt_file.name)[0]
+                        shirt_name = os.path.splitext(shirt_file.name)[0]
+
                         shirt_file.seek(0)
-                        shirt = Image.open(shirt_file).convert("RGBA")
+                        with Image.open(shirt_file).convert("RGBA") as shirt:
 
-                        is_model = "model" in shirt_file.name.lower()
-                        offset_pct = model_offset_pct if is_model else plain_offset_pct
-                        padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
+                            # Optional resize for memory savings
+                            if resize_width > 0 and shirt.width > resize_width:
+                                new_height = int(shirt.height * (resize_width / shirt.width))
+                                shirt = shirt.resize((resize_width, new_height), Image.LANCZOS)
 
-                        bbox = get_shirt_bbox(shirt)
-                        if bbox:
-                            sx, sy, sw, sh = bbox
-                            scale = min(sw / design.width, sh / design.height, 1.0) * padding_ratio
-                            new_width = int(design.width * scale)
-                            new_height = int(design.height * scale)
-                            resized_design = design.resize((new_width, new_height))
-                            y_offset = int(sh * offset_pct / 100)
-                            x = sx + (sw - new_width) // 2
-                            y = sy + y_offset
-                        else:
-                            resized_design = design
-                            x = (shirt.width - design.width) // 2
-                            y = (shirt.height - design.height) // 2
+                            is_model = "model" in shirt_file.name.lower()
+                            offset_pct = model_offset_pct if is_model else plain_offset_pct
+                            padding_ratio = model_padding_ratio if is_model else plain_padding_ratio
 
-                        shirt_copy = shirt.copy()
-                        shirt_copy.paste(resized_design, (x, y), resized_design)
+                            bbox = get_shirt_bbox_cached(shirt_file.getvalue(), shirt_file.name)
+                            if bbox:
+                                sx, sy, sw, sh = bbox
+                                scale = min(sw / design.width, sh / design.height, 1.0) * padding_ratio
+                                new_width = int(design.width * scale)
+                                new_height = int(design.height * scale)
+                                resized_design = design.resize((new_width, new_height))
+                                y_offset = int(sh * offset_pct / 100)
+                                x = sx + (sw - new_width) // 2
+                                y = sy + y_offset
+                            else:
+                                resized_design = design
+                                x = (shirt.width - design.width) // 2
+                                y = (shirt.height - design.height) // 2
 
-                        output_name = f"{graphic_name}_{color_name}_tee.png"
-                        img_byte_arr = io.BytesIO()
-                        shirt_copy.save(img_byte_arr, format='PNG')
-                        img_byte_arr.seek(0)
-                        zipf.writestr(output_name, img_byte_arr.getvalue())
+                            shirt_copy = shirt.copy()
+                            shirt_copy.paste(resized_design, (x, y), resized_design)
 
-                        # Close to free memory
-                        shirt.close()
-                        shirt_copy.close()
-                        resized_design.close()
+                            img_byte_arr = io.BytesIO()
+                            shirt_copy.save(img_byte_arr, format='PNG')
+                            img_byte_arr.seek(0)
 
-                inner_zip_buffer.seek(0)
-                master_zipf.writestr(f"{graphic_name}.zip", inner_zip_buffer.read())
-                design.close()
+                            # Write directly into ZIP under folder for each design
+                            zipf.writestr(f"{design_name}/{design_name}_{shirt_name}.png", img_byte_arr.getvalue())
 
-        master_zip.seek(0)
+                            # Clean up memory
+                            del shirt_copy, resized_design, img_byte_arr
+                            gc.collect()
+
+        zip_buffer.seek(0)
         st.download_button(
-            label="📦 Download All Mockups (Grouped by Design)",
-            data=master_zip,
-            file_name="all_mockups_by_design.zip",
+            label="📦 Download All Mockups",
+            data=zip_buffer,
+            file_name="all_mockups.zip",
             mime="application/zip"
         )
-
