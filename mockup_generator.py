@@ -167,7 +167,7 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
                             img_byte_arr.seek(0)
 
                             # Write directly into ZIP under folder for each design
-                            zipf.writestr(f"{design_name}/{design_name}_{shirt_name}.png", img_byte_arr.getvalue())
+                            zipf.writestr(f"{design_name}_{shirt_name}.png", img_byte_arr.getvalue())
 
                             # Clean up memory
                             del shirt_copy, resized_design, img_byte_arr
@@ -180,3 +180,4 @@ if st.button("🚀 Generate Mockups for Selected Batch"):
             file_name="all_mockups.zip",
             mime="application/zip"
         )
+
